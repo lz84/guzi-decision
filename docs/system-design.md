@@ -560,7 +560,250 @@ guzi-decision/
 
 ---
 
-## 六、关键技术选型
+## 六、异常处理与容灾设计
+
+### 6.1 异常分类与处理策略
+
+#### 6.1.1 数据采集异常
+
+| 异常类型 | 原因 | 处理策略 | 重试次数 | 降级方案 |
+|----------|------|----------|----------|----------|
+| 网络超时 | 网络不稳定 | 指数退避重试 | 3 次 | 跳过，记录日志 |
+| 反爬封禁 | IP 被封 | 切换代理 | 5 次 | 切换数据源 |
+| API 限流 | 超过配额 | 等待冷却 | 自动 | 队列延迟处理 |
+| 数据格式错误 | 源站变更 | 记录异常 | - | 人工介入 |
+| 认证失败 | Token 过期 | 刷新认证 | 1 次 | 告警通知 |
+
+#### 6.1.2 分析引擎异常
+
+| 异常类型 | 原因 | 处理策略 | 降级方案 |
+|----------|------|----------|----------|
+| 模型加载失败 | 资源不足 | 重试加载 | 切换轻量模型 |
+| 分析超时 | 复杂文本 | 缩短文本 | 使用规则引擎 |
+| 内存溢出 | 大文档 | 分批处理 | 跳过处理 |
+| API 调用失败 | LLM 服务异常 | 重试 | 切换备用 LLM |
+
+#### 6.1.3 存储系统异常
+
+| 异常类型 | 原因 | 处理策略 | 降级方案 |
+|----------|------|----------|----------|
+| MongoDB 宕机 | 主节点故障 | 副本集切换 | 只读模式 |
+| Redis 宕机 | 内存不足 | 重启服务 | 本地缓存 |
+| Milvus 宕机 | 服务异常 | 重启服务 | 禁用向量检索 |
+
+### 6.2 重试策略设计
+
+```python
+import asyncio
+from typing import Callable, TypeVar
+
+T = TypeVar('T')
+
+class RetryStrategy:
+    """重试策略"""
+    
+    @staticmethod
+    async def exponential_backoff(
+        func: Callable[..., T],
+        max_retries: int = 3,
+        base_delay: float = 1.0,
+        max_delay: float = 60.0
+    ) -> T:
+        """指数退避重试"""
+        for attempt in range(max_retries):
+            try:
+                return await func()
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    raise
+                delay = min(base_delay * (2 ** attempt), max_delay)
+                await asyncio.sleep(delay)
+```
+
+### 6.3 熔断与降级
+
+```python
+class CircuitBreaker:
+    """熔断器"""
+    
+    def __init__(
+        self,
+        failure_threshold: int = 5,
+        recovery_timeout: float = 60.0
+    ):
+        self.failure_count = 0
+        self.failure_threshold = failure_threshold
+        self.recovery_timeout = recovery_timeout
+        self.state = "closed"  # closed, open, half-open
+        self.last_failure_time = None
+    
+    async def call(self, func: Callable) -> Any:
+        if self.state == "open":
+            if time.time() - self.last_failure_time > self.recovery_timeout:
+                self.state = "half-open"
+            else:
+                raise CircuitBreakerOpenError()
+        
+        try:
+            result = await func()
+            if self.state == "half-open":
+                self.state = "closed"
+                self.failure_count = 0
+            return result
+        except Exception as e:
+            self.failure_count += 1
+            self.last_failure_time = time.time()
+            if self.failure_count >= self.failure_threshold:
+                self.state = "open"
+            raise
+```
+
+### 6.4 容灾架构
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                       容灾架构设计                               │
+└─────────────────────────────────────────────────────────────────┘
+
+                        主节点 (Primary)
+                             │
+                    ┌────────┴────────┐
+                    │                 │
+              副本节点1          副本节点2
+           (Secondary-1)      (Secondary-2)
+                    │                 │
+                    └────────┬────────┘
+                             │
+                        自动故障转移
+                             │
+                      新主节点 (New Primary)
+
+MongoDB 副本集配置：
+- 1 主节点 + 2 副本节点
+- 自动选举机制
+- 数据自动同步
+- 读写分离支持
+```
+
+### 6.5 故障恢复流程
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                       故障恢复流程                               │
+└─────────────────────────────────────────────────────────────────┘
+
+故障检测 (健康检查失败)
+    │
+    ▼
+自动切换 (副本节点提升为主节点)
+    │
+    ▼
+服务恢复 (自动重连新主节点)
+    │
+    ▼
+数据同步 (新主节点同步数据)
+    │
+    ▼
+告警通知 (运维人员介入)
+    │
+    ▼
+原主节点修复
+    │
+    ▼
+原主节点作为副本加入集群
+```
+
+---
+
+## 七、可扩展性设计
+
+### 7.1 插件化架构
+
+```python
+from abc import ABC, abstractmethod
+from typing import Protocol
+
+class CollectorPlugin(Protocol):
+    """采集器插件接口"""
+    
+    @property
+    def name(self) -> str:
+        """插件名称"""
+        ...
+    
+    async def collect(self, config: dict) -> list[dict]:
+        """采集数据"""
+        ...
+    
+    async def health_check(self) -> bool:
+        """健康检查"""
+        ...
+
+class AnalyzerPlugin(Protocol):
+    """分析器插件接口"""
+    
+    @property
+    def name(self) -> str:
+        """插件名称"""
+        ...
+    
+    async def analyze(self, text: str) -> dict:
+        """分析文本"""
+        ...
+
+class PluginManager:
+    """插件管理器"""
+    
+    def __init__(self):
+        self.collectors: dict[str, CollectorPlugin] = {}
+        self.analyzers: dict[str, AnalyzerPlugin] = {}
+    
+    def register_collector(self, plugin: CollectorPlugin):
+        """注册采集器插件"""
+        self.collectors[plugin.name] = plugin
+    
+    def register_analyzer(self, plugin: AnalyzerPlugin):
+        """注册分析器插件"""
+        self.analyzers[plugin.name] = plugin
+    
+    def get_collector(self, name: str) -> CollectorPlugin:
+        """获取采集器"""
+        return self.collectors.get(name)
+```
+
+### 7.2 热插拔支持
+
+```python
+# 动态加载插件
+async def load_plugin(plugin_path: str):
+    """动态加载插件"""
+    import importlib.util
+    
+    spec = importlib.util.spec_from_file_location("plugin", plugin_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    
+    plugin_class = getattr(module, "Plugin")
+    return plugin_class()
+
+# 插件配置热更新
+class ConfigManager:
+    """配置管理器"""
+    
+    def __init__(self):
+        self.config = {}
+        self.watchers = []
+    
+    def update_config(self, key: str, value: Any):
+        """更新配置并通知观察者"""
+        self.config[key] = value
+        for watcher in self.watchers:
+            watcher.on_config_change(key, value)
+```
+
+---
+
+## 八、关键技术选型
 
 ### 6.1 数据采集技术
 

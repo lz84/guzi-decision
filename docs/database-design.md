@@ -505,7 +505,261 @@ index_params = {
 
 ---
 
-## 五、数据关系图
+## 五、数据安全与合规设计
+
+### 5.1 敏感数据处理
+
+#### 5.1.1 敏感字段分类
+
+| 敏感级别 | 字段类型 | 示例 | 处理方式 |
+|----------|----------|------|----------|
+| **高敏感** | 个人身份信息 | 用户ID、手机号、邮箱 | 哈希脱敏存储 |
+| **中敏感** | 内容数据 | 原文内容、评论 | AES-256 加密存储 |
+| **低敏感** | 元数据 | 发布时间、来源 | 明文存储 |
+
+#### 5.1.2 数据脱敏规则
+
+```python
+# 数据脱敏示例
+def mask_user_id(user_id: str) -> str:
+    """用户ID脱敏：保留前3位，其余用*替换"""
+    if len(user_id) <= 3:
+        return user_id
+    return user_id[:3] + '*' * (len(user_id) - 3)
+
+def hash_sensitive_data(data: str, salt: str) -> str:
+    """敏感数据哈希"""
+    import hashlib
+    return hashlib.sha256((data + salt).encode()).hexdigest()
+```
+
+#### 5.1.3 访问权限控制
+
+| 角色 | 权限范围 | 数据访问级别 |
+|------|----------|--------------|
+| 系统管理员 | 全部功能 | 全部数据 |
+| 分析师 | 分析功能 | 脱敏后数据 |
+| 普通用户 | 查询功能 | 聚合统计数据 |
+| API 调用方 | API 接口 | 按授权范围 |
+
+### 5.2 数据备份与恢复
+
+#### 5.2.1 备份策略
+
+| 数据库 | 备份方式 | 备份频率 | 保留周期 |
+|--------|----------|----------|----------|
+| MongoDB | 全量 + 增量 | 每日全量 + 每小时增量 | 30 天 |
+| Redis | RDB + AOF | 每 15 分钟 RDB | 7 天 |
+| Milvus | 快照备份 | 每日 | 14 天 |
+
+#### 5.2.2 备份脚本示例
+
+```bash
+# MongoDB 备份脚本
+mongodump --uri="mongodb://localhost:27017/guzi_sentiment" \
+  --out=/backup/mongodb/$(date +%Y%m%d_%H%M%S)
+
+# Redis 备份
+redis-cli BGSAVE
+cp /var/lib/redis/dump.rdb /backup/redis/dump_$(date +%Y%m%d_%H%M%S).rdb
+```
+
+#### 5.2.3 恢复流程
+
+| 场景 | RTO (恢复时间目标) | RPO (恢复点目标) | 恢复步骤 |
+|------|-------------------|------------------|----------|
+| 单表误删 | < 1 小时 | < 1 小时 | 从增量备份恢复 |
+| 数据库崩溃 | < 4 小时 | < 1 小时 | 从全量+增量恢复 |
+| 灾难恢复 | < 24 小时 | < 24 小时 | 从异地备份恢复 |
+
+### 5.3 合规性设计
+
+#### 5.3.1 数据采集合规
+
+| 合规要求 | 实施措施 |
+|----------|----------|
+| 采集授权 | 仅采集公开数据，遵守 robots.txt |
+| 数据留存 | 按法规要求设置数据保留期限 |
+| 用户权益 | 支持数据删除请求处理 |
+
+#### 5.3.2 数据安全措施
+
+| 措施 | 说明 |
+|------|------|
+| 传输加密 | HTTPS/TLS 1.3 |
+| 存储加密 | AES-256 加密敏感字段 |
+| 访问日志 | 记录所有数据访问操作 |
+| 审计跟踪 | 定期审计数据访问记录 |
+
+---
+
+## 六、数据生命周期管理
+
+### 6.1 数据分层存储策略
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                       数据生命周期                               │
+└─────────────────────────────────────────────────────────────────┘
+
+热数据 (0-7天)
+    │ 存储：MongoDB 主库
+    │ 访问：高频
+    │ 性能：SSD 存储
+    │
+    ▼
+温数据 (7-90天)
+    │ 存储：MongoDB 归档库
+    │ 访问：中频
+    │ 性能：普通存储
+    │
+    ▼
+冷数据 (>90天)
+    │ 存储：对象存储 (S3/MinIO)
+    │ 访问：低频
+    │ 性能：冷存储
+    │
+    ▼
+归档数据 (>1年)
+    │ 存储：离线归档
+    │ 访问：按需
+    │ 清理：按策略删除
+```
+
+### 6.2 归档策略详情
+
+| 数据类型 | 热数据周期 | 温数据周期 | 冷数据周期 | 归档/删除 |
+|----------|------------|------------|------------|-----------|
+| raw_documents | 7 天 | 83 天 | - | 90 天后删除 |
+| processed_documents | 7 天 | 83 天 | - | 90 天后删除 |
+| analysis_results | 30 天 | 335 天 | 1 年 | 归档到冷存储 |
+| events | 30 天 | 335 天 | 永久 | 永久保留 |
+| daily_reports | 7 天 | 永久 | - | 永久保留 |
+
+### 6.3 数据归档脚本
+
+```python
+# 数据归档任务
+async def archive_old_data():
+    """归档 90 天前的数据到冷存储"""
+    cutoff_date = datetime.now() - timedelta(days=90)
+    
+    # 1. 查询待归档数据
+    old_data = await db.raw_documents.find({
+        "collected_at": {"$lt": cutoff_date}
+    }).to_list(length=None)
+    
+    # 2. 上传到对象存储
+    for doc in old_data:
+        await upload_to_cold_storage(doc)
+    
+    # 3. 删除本地数据
+    await db.raw_documents.delete_many({
+        "collected_at": {"$lt": cutoff_date}
+    })
+```
+
+---
+
+## 七、Milvus 向量数据库详细设计
+
+### 7.1 向量生成策略
+
+#### 7.1.1 模型选择
+
+| 用途 | 模型 | 维度 | 说明 |
+|------|------|------|------|
+| 文本语义向量 | sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2 | 768 | 多语言支持 |
+| 金融领域向量 | FinBERT (微调) | 768 | 金融领域优化 |
+
+#### 7.1.2 向量生成流程
+
+```python
+from sentence_transformers import SentenceTransformer
+
+class VectorGenerator:
+    def __init__(self, model_name: str = "paraphrase-multilingual-MiniLM-L12-v2"):
+        self.model = SentenceTransformer(model_name)
+    
+    def generate_embedding(self, text: str) -> list[float]:
+        """生成文本向量"""
+        embedding = self.model.encode(text, normalize_embeddings=True)
+        return embedding.tolist()
+    
+    def batch_generate(self, texts: list[str]) -> list[list[float]]:
+        """批量生成向量"""
+        embeddings = self.model.encode(texts, normalize_embeddings=True)
+        return embeddings.tolist()
+```
+
+### 7.2 相似度检索阈值
+
+| 用途 | 相似度阈值 | 说明 |
+|------|------------|------|
+| 文本去重 | ≥ 0.95 | 高相似度判定为重复 |
+| 相关文档推荐 | ≥ 0.80 | 中等相关性 |
+| 话题聚类 | ≥ 0.70 | 同一话题 |
+| 相似事件匹配 | ≥ 0.75 | 相似事件 |
+
+### 7.3 分区策略
+
+```python
+# 按月份分区
+from pymilvus import Collection
+
+collection = Collection("document_vectors")
+
+# 创建分区
+for month in ["202601", "202602", "202603", ...]:
+    collection.create_partition(f"partition_{month}")
+
+# 插入数据时指定分区
+def insert_with_partition(doc_id: str, embedding: list, published_at: datetime):
+    partition_name = published_at.strftime("%Y%m")
+    collection.insert(
+        [doc_id, embedding, published_at.timestamp()],
+        partition_name=f"partition_{partition_name}"
+    )
+```
+
+### 7.4 检索性能优化
+
+| 数据量 | 索引类型 | 参数配置 |
+|--------|----------|----------|
+| < 10 万 | FLAT | 无需参数 |
+| 10-100 万 | IVF_FLAT | nlist=1024 |
+| 100-1000 万 | IVF_PQ | nlist=2048, m=32 |
+| > 1000 万 | HNSW | M=16, efConstruction=256 |
+
+---
+
+## 八、核心查询场景与索引映射
+
+### 8.1 查询场景矩阵
+
+| 查询场景 | 涉及字段 | 使用索引 | 优化说明 |
+|----------|----------|----------|----------|
+| 按时间查询最新数据 | published_at | published_at -1 | 已优化 |
+| 按情感查询 | sentiment.label | sentiment.label | 已优化 |
+| 按时间+情感组合查询 | published_at, sentiment.label | 复合索引 | 已优化 |
+| 按关键词查询 | keywords | keywords | 已优化 |
+| 按事件类型查询 | events.type | events.type | 已优化 |
+| 按平台查询 | platform | source (前缀) | 已优化 |
+| 去重查询 | content_hash | content_hash (唯一) | 已优化 |
+
+### 8.2 索引冗余检查
+
+| 索引 | 是否必要 | 原因 |
+|------|----------|------|
+| {source: 1, source_id: 1} | ✅ 必要 | 唯一约束，防止重复采集 |
+| {published_at: -1} | ✅ 必要 | 时间范围查询高频使用 |
+| {status: 1} | ✅ 必要 | 任务状态筛选 |
+| {tags: 1} | ⚠️ 可选 | 标签查询较少使用 |
+| {collected_at: 1} (TTL) | ✅ 必要 | 自动清理过期数据 |
+
+---
+
+## 九、数据关系图
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐

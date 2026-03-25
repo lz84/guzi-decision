@@ -1,0 +1,489 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>情报虚拟交易看板 - 谷子情报分析系统</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            min-height: 100vh;
+            padding: 20px;
+            color: #fff;
+        }
+        .container { max-width: 1600px; margin: 0 auto; }
+        .header {
+            background: rgba(255,255,255,0.1);
+            border-radius: 15px;
+            padding: 25px;
+            margin-bottom: 20px;
+            backdrop-filter: blur(10px);
+        }
+        .header h1 { color: #00d4ff; font-size: 28px; margin-bottom: 10px; }
+        .header .subtitle { color: #888; font-size: 14px; }
+        
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        .stat-card {
+            background: rgba(255,255,255,0.05);
+            padding: 20px;
+            border-radius: 10px;
+            border-left: 4px solid #00d4ff;
+        }
+        .stat-card.profit { border-left-color: #00ff88; }
+        .stat-card.loss { border-left-color: #ff4444; }
+        .stat-card h3 { color: #888; font-size: 12px; text-transform: uppercase; margin-bottom: 10px; }
+        .stat-card .value { font-size: 28px; font-weight: bold; }
+        .stat-card.profit .value { color: #00ff88; }
+        .stat-card.loss .value { color: #ff4444; }
+        
+        .section {
+            background: rgba(255,255,255,0.05);
+            border-radius: 15px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .section h2 { color: #00d4ff; margin-bottom: 15px; font-size: 18px; }
+        
+        .two-col {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+        @media (max-width: 1000px) {
+            .two-col { grid-template-columns: 1fr; }
+        }
+        
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid rgba(255,255,255,0.1); }
+        th { color: #888; font-size: 12px; text-transform: uppercase; }
+        .profit { color: #00ff88; }
+        .loss { color: #ff4444; }
+        .pending { color: #ffaa00; }
+        .neutral { color: #888; }
+        
+        .chart-container {
+            position: relative;
+            height: 300px;
+            width: 100%;
+        }
+        
+        .int-tag {
+            display: inline-block;
+            background: rgba(0,212,255,0.2);
+            color: #00d4ff;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            margin-left: 5px;
+        }
+        
+        .source-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            margin-right: 5px;
+        }
+        .source-reuters { background: #ff6600; }
+        .source-bloomberg { background: #000; }
+        .source-twitter { background: #1da1f2; }
+        .source-reddit { background: #ff4500; }
+        .source-analyst { background: #9b59b6; }
+        
+        .refresh-info {
+            text-align: center;
+            color: #666;
+            margin-top: 20px;
+            font-size: 12px;
+        }
+        
+        .tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+        .tab {
+            padding: 8px 16px;
+            background: rgba(255,255,255,0.05);
+            border-radius: 8px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .tab:hover { background: rgba(255,255,255,0.1); }
+        .tab.active { background: rgba(0,212,255,0.3); color: #00d4ff; }
+        
+        .intelligence-row {
+            background: rgba(0,0,0,0.2);
+            padding: 10px;
+            border-radius: 8px;
+            margin-top: 5px;
+            font-size: 12px;
+        }
+        .intelligence-row .title { color: #00d4ff; font-weight: bold; }
+        .intelligence-row .source { color: #888; margin-left: 10px; }
+        .intelligence-row .confidence { float: right; }
+        
+        .btn {
+            padding: 8px 16px;
+            border-radius: 8px;
+            border: none;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+        .btn-primary {
+            background: linear-gradient(135deg, #00d4ff, #0099cc);
+            color: #fff;
+        }
+        .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 5px 20px rgba(0,212,255,0.3); }
+        
+        .filter-row {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+        .filter-row select, .filter-row input {
+            padding: 8px 12px;
+            border-radius: 8px;
+            border: 1px solid rgba(255,255,255,0.2);
+            background: rgba(0,0,0,0.3);
+            color: #fff;
+        }
+        .filter-row select option { background: #1a1a2e; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📊 情报虚拟交易看板</h1>
+            <div class="subtitle">谷子情报分析系统 | <span id="update-time">加载中...</span></div>
+        </div>
+        
+        <!-- 账户概览 -->
+        <div class="stats-grid">
+            <div class="stat-card">
+                <h3>当前余额</h3>
+                <div class="value" id="current-balance">$0.00</div>
+            </div>
+            <div class="stat-card">
+                <h3>初始资金</h3>
+                <div class="value" id="initial-balance">$10,000</div>
+            </div>
+            <div class="stat-card" id="pnl-card">
+                <h3>总盈亏</h3>
+                <div class="value" id="total-pnl">$0.00</div>
+            </div>
+            <div class="stat-card">
+                <h3>收益率</h3>
+                <div class="value" id="return-rate">0%</div>
+            </div>
+            <div class="stat-card">
+                <h3>胜率</h3>
+                <div class="value" id="win-rate">0%</div>
+            </div>
+            <div class="stat-card">
+                <h3>总交易数</h3>
+                <div class="value" id="total-trades">0</div>
+            </div>
+        </div>
+        
+        <!-- 统计图表 -->
+        <div class="two-col">
+            <div class="section">
+                <h2>📈 收益曲线</h2>
+                <div class="chart-container">
+                    <canvas id="pnlChart"></canvas>
+                </div>
+            </div>
+            <div class="section">
+                <h2>🎯 胜率统计</h2>
+                <div class="chart-container">
+                    <canvas id="winRateChart"></canvas>
+                </div>
+            </div>
+        </div>
+        
+        <!-- 按来源/标的统计 -->
+        <div class="two-col">
+            <div class="section">
+                <h2>📊 按情报来源统计</h2>
+                <div class="chart-container">
+                    <canvas id="sourceChart"></canvas>
+                </div>
+            </div>
+            <div class="section">
+                <h2>📊 按标的分类统计</h2>
+                <div class="chart-container">
+                    <canvas id="symbolChart"></canvas>
+                </div>
+            </div>
+        </div>
+        
+        <!-- 交易历史 -->
+        <div class="section">
+            <h2>📜 交易历史</h2>
+            <div class="filter-row">
+                <select id="filter-status">
+                    <option value="">全部状态</option>
+                    <option value="pending">待验证</option>
+                    <option value="completed">已完成</option>
+                </select>
+                <input type="text" id="filter-symbol" placeholder="搜索标的...">
+                <button class="btn btn-primary" onclick="loadTrades()">筛选</button>
+            </div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>标的</th>
+                        <th>方向</th>
+                        <th>金额</th>
+                        <th>状态</th>
+                        <th>盈亏</th>
+                        <th>情报来源</th>
+                        <th>时间</th>
+                    </tr>
+                </thead>
+                <tbody id="trades-table">
+                    <tr><td colspan="8">加载中...</td></tr>
+                </tbody>
+            </table>
+        </div>
+        
+        <!-- 情报准确度排名 -->
+        <div class="section">
+            <h2>🏆 情报来源准确度排名</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>排名</th>
+                        <th>情报来源</th>
+                        <th>总情报数</th>
+                        <th>准确率</th>
+                        <th>平均收益</th>
+                        <th>评级</th>
+                    </tr>
+                </thead>
+                <tbody id="sources-table">
+                    <tr><td colspan="6">加载中...</td></tr>
+                </tbody>
+            </table>
+        </div>
+        
+        <div class="refresh-info">
+            自动刷新间隔: 30秒 | 最后更新: <span id="last-refresh">-</span>
+        </div>
+    </div>
+    
+    <script>
+        const API_BASE = '';
+        let pnlChart, winRateChart, sourceChart, symbolChart;
+        
+        // 初始化图表
+        function initCharts() {
+            const chartOptions = {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { labels: { color: '#fff' } }
+                },
+                scales: {
+                    x: { ticks: { color: '#888' }, grid: { color: 'rgba(255,255,255,0.1)' } },
+                    y: { ticks: { color: '#888' }, grid: { color: 'rgba(255,255,255,0.1)' } }
+                }
+            };
+            
+            // 收益曲线
+            pnlChart = new Chart(document.getElementById('pnlChart'), {
+                type: 'line',
+                data: { labels: [], datasets: [{ label: '账户余额', data: [], borderColor: '#00d4ff', tension: 0.3 }] },
+                options: chartOptions
+            });
+            
+            // 胜率统计
+            winRateChart = new Chart(document.getElementById('winRateChart'), {
+                type: 'doughnut',
+                data: {
+                    labels: ['盈利', '亏损', '待验证'],
+                    datasets: [{ data: [0, 0, 0], backgroundColor: ['#00ff88', '#ff4444', '#ffaa00'] }]
+                },
+                options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { color: '#fff' } } } }
+            });
+            
+            // 按来源统计
+            sourceChart = new Chart(document.getElementById('sourceChart'), {
+                type: 'bar',
+                data: { labels: [], datasets: [{ label: '胜率%', data: [], backgroundColor: '#00d4ff' }] },
+                options: chartOptions
+            });
+            
+            // 按标的统计
+            symbolChart = new Chart(document.getElementById('symbolChart'), {
+                type: 'bar',
+                data: { labels: [], datasets: [{ label: '盈亏$', data: [], backgroundColor: '#00ff88' }] },
+                options: chartOptions
+            });
+        }
+        
+        async function loadDashboardData() {
+            try {
+                // 加载账户和交易统计
+                const statsRes = await fetch(`${API_BASE}/api/trading/statistics`);
+                const stats = await statsRes.json();
+                
+                // 更新账户概览
+                document.getElementById('current-balance').textContent = `$${(stats.current_balance || 10000).toFixed(2)}`;
+                document.getElementById('initial-balance').textContent = `$${(stats.initial_balance || 10000).toFixed(2)}`;
+                
+                const pnl = stats.total_profit || 0;
+                const pnlEl = document.getElementById('total-pnl');
+                pnlEl.textContent = `${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`;
+                
+                const pnlCard = document.getElementById('pnl-card');
+                pnlCard.className = 'stat-card ' + (pnl >= 0 ? 'profit' : 'loss');
+                
+                const returnRate = ((stats.current_balance - stats.initial_balance) / stats.initial_balance * 100) || 0;
+                document.getElementById('return-rate').textContent = `${returnRate >= 0 ? '+' : ''}${returnRate.toFixed(2)}%`;
+                
+                document.getElementById('win-rate').textContent = `${((stats.win_rate || 0) * 100).toFixed(1)}%`;
+                document.getElementById('total-trades').textContent = stats.total_trades || 0;
+                
+                // 更新胜率图表
+                const completed = stats.total_trades || 0;
+                const wins = Math.round(completed * (stats.win_rate || 0));
+                const losses = completed - wins;
+                const pending = stats.pending_trades || 0;
+                winRateChart.data.datasets[0].data = [wins, losses, pending];
+                winRateChart.update();
+                
+                // 加载收益曲线
+                const curveRes = await fetch(`${API_BASE}/api/trading/pnl-curve`);
+                const curveData = await curveRes.json();
+                if (curveData && curveData.length > 0) {
+                    pnlChart.data.labels = curveData.map(d => d.timestamp ? d.timestamp.split('T')[0] : '');
+                    pnlChart.data.datasets[0].data = curveData.map(d => d.balance || 0);
+                    pnlChart.update();
+                }
+                
+                // 按来源统计
+                if (stats.source_statistics && stats.source_statistics.length > 0) {
+                    sourceChart.data.labels = stats.source_statistics.map(s => s.source);
+                    sourceChart.data.datasets[0].data = stats.source_statistics.map(s => (s.avg_return * 100).toFixed(2));
+                    sourceChart.update();
+                }
+                
+                // 按标的统计
+                if (stats.symbol_statistics && stats.symbol_statistics.length > 0) {
+                    symbolChart.data.labels = stats.symbol_statistics.map(s => s.symbol);
+                    symbolChart.data.datasets[0].data = stats.symbol_statistics.map(s => s.avg_return || 0);
+                    symbolChart.update();
+                }
+                
+            } catch (error) {
+                console.error('Failed to load dashboard data:', error);
+            }
+        }
+        
+        async function loadTrades() {
+            try {
+                const status = document.getElementById('filter-status').value;
+                const symbol = document.getElementById('filter-symbol').value;
+                
+                const res = await fetch(`${API_BASE}/api/trading/history?limit=50`);
+                const trades = await res.json();
+                
+                let filtered = trades;
+                if (status) filtered = filtered.filter(t => t.status === status);
+                if (symbol) filtered = filtered.filter(t => t.symbol.toLowerCase().includes(symbol.toLowerCase()));
+                
+                const tbody = document.getElementById('trades-table');
+                if (filtered.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="8">暂无交易记录</td></tr>';
+                    return;
+                }
+                
+                tbody.innerHTML = filtered.map(t => {
+                    const directionClass = t.direction === 'bullish' ? 'profit' : 'loss';
+                    const directionText = t.direction === 'bullish' ? '看涨 📈' : '看跌 📉';
+                    const statusClass = t.status === 'completed' ? (t.profit_loss >= 0 ? 'profit' : 'loss') : 'pending';
+                    const statusText = t.status === 'completed' ? '已完成' : '待验证';
+                    const pnl = t.profit_loss != null ? `${t.profit_loss >= 0 ? '+' : ''}$${t.profit_loss.toFixed(2)}` : '-';
+                    
+                    return `
+                        <tr>
+                            <td>#${t.id}</td>
+                            <td><strong>${t.symbol}</strong></td>
+                            <td class="${directionClass}">${directionText}</td>
+                            <td>$${t.amount.toFixed(2)}</td>
+                            <td class="${statusClass}">${statusText}</td>
+                            <td class="${statusClass}">${pnl}</td>
+                            <td>${t.intelligence_source || t.intelligence_source || '-'}</td>
+                            <td>${t.created_at ? t.created_at.split('T')[0] : '-'}</td>
+                        </tr>
+                    `;
+                }).join('');
+                
+            } catch (error) {
+                console.error('Failed to load trades:', error);
+            }
+        }
+        
+        async function loadIntelligenceSources() {
+            try {
+                const res = await fetch(`${API_BASE}/api/trading/intelligence/best-sources?min_count=1`);
+                const data = await res.json();
+                const sources = data.sources || [];
+                
+                const tbody = document.getElementById('sources-table');
+                if (sources.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="6">暂无情报来源统计数据</td></tr>';
+                    return;
+                }
+                
+                tbody.innerHTML = sources.map((s, i) => {
+                    const rating = s.avg_accuracy >= 0.7 ? '⭐⭐⭐ 优秀' : s.avg_accuracy >= 0.5 ? '⭐⭐ 良好' : '⭐ 一般';
+                    return `
+                        <tr>
+                            <td>#${i + 1}</td>
+                            <td><strong>${s.source}</strong></td>
+                            <td>${s.total_intelligences}</td>
+                            <td class="${s.avg_accuracy >= 0.5 ? 'profit' : 'loss'}">${(s.avg_accuracy * 100).toFixed(1)}%</td>
+                            <td class="${s.avg_profit >= 0 ? 'profit' : 'loss'}">${s.avg_profit >= 0 ? '+' : ''}$${(s.avg_profit || 0).toFixed(2)}</td>
+                            <td>${rating}</td>
+                        </tr>
+                    `;
+                }).join('');
+                
+            } catch (error) {
+                console.error('Failed to load intelligence sources:', error);
+                document.getElementById('sources-table').innerHTML = '<tr><td colspan="6">暂无情报来源统计数据</td></tr>';
+            }
+        }
+        
+        async function loadAll() {
+            await Promise.all([
+                loadDashboardData(),
+                loadTrades(),
+                loadIntelligenceSources()
+            ]);
+            document.getElementById('last-refresh').textContent = new Date().toLocaleTimeString();
+            document.getElementById('update-time').textContent = `系统运行中 | ${new Date().toLocaleString()}`;
+        }
+        
+        // 初始化
+        initCharts();
+        loadAll();
+        
+        // 自动刷新
+        setInterval(loadAll, 30000);
+    </script>
+</body>
+</html>
